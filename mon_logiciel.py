@@ -4,8 +4,28 @@ import smtplib
 import time
 import re
 from email.message import EmailMessage
+import random
 
 st.set_page_config(page_title="ApplyAuto - Assistant de Candidature", layout="wide", page_icon="🚀")
+
+DOMAINES_GENERIQUES = {
+    "gmail.com", "yahoo.com", "yahoo.fr", "hotmail.com", "hotmail.fr", 
+    "outlook.com", "outlook.fr", "live.com", "live.fr", "orange.fr", 
+    "free.fr", "sfr.fr", "laposte.net", "icloud.com", "msn.com", "aol.com", "bbox.fr"
+}
+
+def deviner_entreprise_depuis_email(email):
+    """Extrait le nom de l'entreprise du domaine s'il n'est pas générique."""
+    try:
+        domaine = email.split('@')[1].lower()
+        if domaine in DOMAINES_GENERIQUES:
+            return ""
+        
+        nom_brut = domaine.split('.')[0]
+        nom_propre = nom_brut.replace('-', ' ').title()
+        return nom_propre
+    except:
+        return ""
 
 # --- TEXTES RELIGIEUX ---
 verset_fixe = "﴿ وَمَن يَتَوَكَّلْ عَلَى اللَّهِ فَهُوَ حَسْبُهُ ۚ إِنَّ اللَّهَ بَالِغُ أَمْرِهِ ﴾"
@@ -80,9 +100,10 @@ else:
     st.title("🚀 ApplyAuto : Logiciel d'Envoi de Candidatures")
     st.markdown("Automatisez vos demandes de stage facilement. **Vos identifiants ne sont pas sauvegardés.**")
 
-    def extraire_emails(texte):
+    def extraire_emails_simples(texte):
         pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-        return list(set(re.findall(pattern, str(texte))))
+        emails = list(set(re.findall(pattern, str(texte))))
+        return [{"email": e, "entreprise": deviner_entreprise_depuis_email(e), "contact": ""} for e in emails]
 
     with st.sidebar:
         st.header("🔑 Connexion Gmail")
@@ -101,21 +122,24 @@ else:
         cv_file = st.file_uploader("Chargez votre CV au format PDF", type="pdf")
 
     with col2:
-        objet_email = st.text_input("Objet de l'email", value="Demande de stage")
-        corps_email = st.text_area("Corps du message", height=200, value=""" Bonjour""")
+        st.info("💡 Utilisez les balises **{entreprise}** et **{contact}** dans le texte. Si vous n'avez pas de fichier Excel, l'outil tentera de deviner le nom de l'entreprise grâce à l'e-mail !")
+        objet_email = st.text_input("Objet de l'email", value="Candidature spontanée stage - {entreprise}")
+        corps_email = st.text_area("Corps du message", height=200, value="Bonjour {contact},\n\nJe vous contacte car je suis très intéressé par {entreprise}...")
 
     st.header("2️⃣ Ajoutez vos contacts")
     tab1, tab2 = st.tabs(["📋 Coller du texte", "📁 Importer un fichier (Excel/CSV)"])
 
-    emails_trouves = []
+    destinataires_finaux = []
 
     with tab1:
         texte_brut = st.text_area("Collez vos adresses emails ici :", height=150)
         if texte_brut:
-            emails_trouves.extend(extraire_emails(texte_brut))
+            destinataires_finaux.extend(extraire_emails_simples(texte_brut))
 
     with tab2:
-        fichier_upload = st.file_uploader("Chargez un fichier contenant des emails", type=["xlsx", "csv"])
+        st.caption("Votre fichier doit idéalement contenir les colonnes : **Email**, **Entreprise**, et **Contact**.")
+        fichier_upload = st.file_uploader("Chargez un fichier contenant vos contacts", type=["xlsx", "csv"])
+        
         if fichier_upload is not None:
             try:
                 if fichier_upload.name.endswith('.csv'):
@@ -123,18 +147,45 @@ else:
                 else:
                     df = pd.read_excel(fichier_upload)
                 
-                # to_csv empêche la troncature des données longues
-                texte_fichier = df.to_csv(index=False)
-                emails_trouves.extend(extraire_emails(texte_fichier))
+                df.columns = [str(c).strip().lower() for c in df.columns]
+                
+                if 'email' in df.columns:
+                    for index, row in df.iterrows():
+                        email = str(row['email']).strip()
+                        if pd.notna(email) and "@" in email:
+                            entreprise = str(row['entreprise']).strip() if 'entreprise' in df.columns and pd.notna(row['entreprise']) else ""
+                            
+                            if not entreprise or entreprise == "nan":
+                                entreprise = deviner_entreprise_depuis_email(email)
+                                
+                            contact = str(row['contact']).strip() if 'contact' in df.columns and pd.notna(row['contact']) else ""
+                            
+                            destinataires_finaux.append({
+                                "email": email,
+                                "entreprise": entreprise,
+                                "contact": contact
+                            })
+                else:
+                    st.warning("Aucune colonne nommée 'Email' trouvée. Extraction basique en cours...")
+                    texte_fichier = df.to_csv(index=False)
+                    destinataires_finaux.extend(extraire_emails_simples(texte_fichier))
+                    
             except Exception as e:
                 st.error(f"Erreur de lecture du fichier : {e}")
 
-    emails_finaux = sorted(list(set(emails_trouves)))
+    emails_vus = set()
+    liste_propre = []
+    for dest in destinataires_finaux:
+        if dest["email"] not in emails_vus:
+            emails_vus.add(dest["email"])
+            liste_propre.append(dest)
+            
+    destinataires_finaux = liste_propre
 
-    if emails_finaux:
-        st.success(f"✅ L'outil a détecté **{len(emails_finaux)}** adresse(s) email unique(s).")
-        with st.expander("Voir la liste des destinataires"):
-            st.dataframe(pd.DataFrame(emails_finaux, columns=["Adresses détectées"]), use_container_width=True)
+    if destinataires_finaux:
+        st.success(f"✅ L'outil a détecté **{len(destinataires_finaux)}** contact(s) unique(s).")
+        with st.expander("Voir la liste complète (avec extraction automatique)"):
+            st.dataframe(pd.DataFrame(destinataires_finaux), use_container_width=True)
 
     st.header("3️⃣ Lancer la campagne")
     if st.button("▶️ Envoyer les candidatures", type="primary", use_container_width=True):
@@ -144,7 +195,7 @@ else:
             st.error("⚠️ Veuillez charger votre CV.")
         elif not objet_email.strip() or not corps_email.strip():
             st.error("⚠️ L'objet et le corps du message ne peuvent pas être vides.")
-        elif len(emails_finaux) == 0:
+        elif len(destinataires_finaux) == 0:
             st.error("⚠️ Aucun email n'a été détecté.")
         else:
             cv_data = cv_file.read()
@@ -159,30 +210,36 @@ else:
                 server.login(email_exp, mdp_exp)
                 
                 count = 0
-                total = len(emails_finaux)
+                total = len(destinataires_finaux)
                 
-                for dest in emails_finaux:
+                for dest in destinataires_finaux:
                     msg = EmailMessage()
-                    msg['Subject'] = objet_email
+                    
+                    obj_final = objet_email.replace("{entreprise}", dest["entreprise"]).replace("{contact}", dest["contact"]).strip()
+                    corps_final = corps_email.replace("{entreprise}", dest["entreprise"]).replace("{contact}", dest["contact"]).strip()
+                    
+                    obj_final = obj_final.replace(" -  ", "").replace("  ", " ").replace(" -", "")
+                    corps_final = corps_final.replace("Bonjour ,", "Bonjour,").replace("Bonjour  ,", "Bonjour,")
+                    
+                    msg['Subject'] = obj_final
                     msg['From'] = email_exp
-                    msg['To'] = dest
-                    msg.set_content(corps_email)
+                    msg['To'] = dest["email"]
+                    msg.set_content(corps_final)
                     msg.add_attachment(cv_data, maintype='application', subtype='pdf', filename=cv_name)
                     
                     server.send_message(msg)
                     
                     count += 1
                     progres.progress(count / total)
-                    status_text.success(f"Envoi réussi à {dest} ({count}/{total})")
+                    status_text.success(f"Envoi réussi à {dest['email']} ({count}/{total})")
                     
-                    temps_restant = (total - count) * 3
-                    minutes, secondes = divmod(temps_restant, 60)
-                    if temps_restant > 0:
-                        eta_text.caption(f"⏳ Temps restant estimé : {minutes} min {secondes} s")
+                    if count < total:
+                        temps_restant = (total - count) * 10 
+                        minutes, secondes = divmod(temps_restant, 60)
+                        eta_text.caption(f"Pause. Temps restant estimé : {minutes} min {secondes} s")
+                        time.sleep(random.randint(5, 15))
                     else:
                         eta_text.empty()
-                        
-                    time.sleep(3) 
                 
                 server.quit()
                 st.balloons()
